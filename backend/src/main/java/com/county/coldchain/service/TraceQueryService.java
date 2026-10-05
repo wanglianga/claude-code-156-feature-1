@@ -13,6 +13,7 @@ import com.county.coldchain.domain.entity.SortItem;
 import com.county.coldchain.domain.entity.SortingRecord;
 import com.county.coldchain.domain.entity.StockLot;
 import com.county.coldchain.domain.entity.StockMove;
+import com.county.coldchain.domain.entity.TempExceedCase;
 import com.county.coldchain.domain.entity.TraceEvent;
 import com.county.coldchain.repo.AlertRepository;
 import com.county.coldchain.repo.BatchRepository;
@@ -27,6 +28,7 @@ import com.county.coldchain.repo.SortItemRepository;
 import com.county.coldchain.repo.SortingRecordRepository;
 import com.county.coldchain.repo.StockLotRepository;
 import com.county.coldchain.repo.StockMoveRepository;
+import com.county.coldchain.repo.TempExceedCaseRepository;
 import com.county.coldchain.repo.TraceEventRepository;
 import com.county.coldchain.support.BizException;
 import lombok.RequiredArgsConstructor;
@@ -56,6 +58,7 @@ public class TraceQueryService {
     private final ComplaintRepository complaintRepository;
     private final AlertRepository alertRepository;
     private final BillRepository billRepository;
+    private final TempExceedCaseRepository tempCaseRepository;
 
     @Transactional(readOnly = true)
     public Map<String, Object> chain(Long batchId) {
@@ -73,6 +76,9 @@ public class TraceQueryService {
 
         List<Inspection> inspections = inspectionRepository.findByBatchIdOrderByInspectedAtDesc(batchId);
         m.put("inspections", inspections);
+
+        List<TempExceedCase> tempCases = tempCaseRepository.findByBatchIdOrderByCreatedAtDesc(batchId);
+        m.put("tempCases", tempCases);
 
         List<Map<String, Object>> sortings = new java.util.ArrayList<>();
         for (SortingRecord r : sortingRepository.findByBatchIdOrderBySortedAtAsc(batchId)) {
@@ -141,6 +147,7 @@ public class TraceQueryService {
         m.put("lockedPrice", b.getLockedPrice());
         m.put("settleByOriginalWeight", b.getSettleByOriginalWeight());
         m.put("status", b.getStatus().name());
+        m.put("saleFrozen", b.getSaleFrozen());
         m.put("acceptedWeight", b.getAcceptedWeight());
         m.put("downgradeWeight", b.getDowngradeWeight());
         m.put("returnedWeight", b.getReturnedWeight());

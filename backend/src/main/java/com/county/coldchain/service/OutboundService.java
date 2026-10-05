@@ -29,6 +29,7 @@ import com.county.coldchain.repo.StockMoveRepository;
 import com.county.coldchain.repo.ZoneRepository;
 import com.county.coldchain.support.BizException;
 import com.county.coldchain.web.dto.OutboundRequest;
+import com.county.coldchain.web.dto.SubstituteRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,17 +70,11 @@ public class OutboundService {
                 .orElseThrow(() -> new BizException("批次不存在"));
         Customer customer = customerRepository.findById(req.getCustomerId())
                 .orElseThrow(() -> new BizException("客户不存在"));
-        validateItems(req, batch);
+        ensureSellable(batch);
+        validateItems(req.getItems(), batch);
 
-        OutboundOrder o = new OutboundOrder();
-        o.setOrderNo("O" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
-                + String.format("%03d", orderRepository.count() + 1));
-        o.setCustomerId(customer.getId());
-        o.setBatchId(batch.getId());
-        o.setPriority(Boolean.TRUE.equals(req.getPriority()));
-        o.setOperator(req.getOperator());
-        o.setPlannedAt(LocalDateTime.now());
-        o.setRemark(req.getRemark());
+        OutboundOrder o = buildOrder(batch, customer, req.getItems(), req.getOperator(),
+                Boolean.TRUE.equals(req.getPriority()), req.getRemark(), req.getOverrideUnitPrice());
 
         boolean changed = batch.getPlannedCustomerId() != null
                 && !batch.getPlannedCustomerId().equals(customer.getId());
@@ -98,14 +93,36 @@ public class OutboundService {
                     "客户要求优先出库 " + batch.getBatchNo(),
                     customer.getName() + " 要求优先出库，调度应在排单序列中前置。", req.getOperator());
         }
+        return orderRepository.save(o);
+    }
 
+    /** 温度超标预冷复检中的批次冻结对外销售：禁止排单与出库。 */
+    private void ensureSellable(Batch batch) {
+        if (Boolean.TRUE.equals(batch.getSaleFrozen())) {
+            throw new BizException("批次温度超标预冷复检中，已冻结对外销售，复检合格前禁止排单/出库");
+        }
+    }
+
+    /** 创建 PLANNED 出库单并落明细（价格：手工单价 > 客户锁价 > 货位批次价）。 */
+    private OutboundOrder buildOrder(Batch batch, Customer customer, List<OutboundRequest.Item> items,
+                                     String operator, boolean priority, String remark,
+                                     BigDecimal overrideUnitPrice) {
+        OutboundOrder o = new OutboundOrder();
+        o.setOrderNo("O" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
+                + String.format("%03d", orderRepository.count() + 1));
+        o.setCustomerId(customer.getId());
+        o.setBatchId(batch.getId());
+        o.setPriority(priority);
+        o.setOperator(operator);
+        o.setPlannedAt(LocalDateTime.now());
+        o.setRemark(remark);
         o = orderRepository.save(o);
-        PriceLock appliedLock = null;
+
         Category cat = categoryRepository.findById(batch.getCategoryId()).orElseThrow();
-        for (OutboundRequest.Item it : req.getItems()) {
+        for (OutboundRequest.Item it : items) {
             StockLot lot = lotRepository.findById(it.getLotId())
                     .orElseThrow(() -> new BizException("货位批次不存在"));
-            BigDecimal price = resolvePrice(req, it, customer, cat, batch);
+            BigDecimal price = resolvePrice(overrideUnitPrice, it, customer, cat);
             OutboundItem oi = new OutboundItem();
             oi.setOutboundId(o.getId());
             oi.setLotId(lot.getId());
@@ -123,10 +140,77 @@ public class OutboundService {
             o.setPriceLocked(true);
             o.setLockedPrice(lock.getLockedPrice());
         }
-        if (req.getOverrideUnitPrice() != null) {
-            o.setLockedPrice(req.getOverrideUnitPrice());
+        if (overrideUnitPrice != null) {
+            o.setLockedPrice(overrideUnitPrice);
         }
         return orderRepository.save(o);
+    }
+
+    /** 温度超标复检不合格/现场退货时，自动撤回批次全部待出库计划。 */
+    @Transactional
+    public int withdrawPlannedOrders(Long batchId, String reason, String operator) {
+        List<OutboundOrder> planned = orderRepository.findByBatchIdOrderByCreatedAtDesc(batchId)
+                .stream().filter(o -> o.getStatus() == OrderStatus.PLANNED).toList();
+        for (OutboundOrder o : planned) {
+            o.setStatus(OrderStatus.WITHDRAWN);
+            o.setWithdrawReason(reason);
+            orderRepository.save(o);
+            Customer c = customerRepository.findById(o.getCustomerId()).orElse(null);
+            String customerName = c == null ? String.valueOf(o.getCustomerId()) : c.getName();
+            alertService.raise(AlertType.PLAN_WITHDRAWN, AlertLevel.CRITICAL, batchId, null,
+                    "出库计划撤回 " + o.getOrderNo(),
+                    "分配给 " + customerName + " 的出库计划 " + o.getOrderNo() + "（" + o.getTotalWeight()
+                            + "kg）因「" + reason + "」自动撤回，销售员需重新选择替代批次并向客户说明到货差异。",
+                    operator);
+            traceService.log(batchId, null, o.getCustomerId(), Stage.OUTBOUND,
+                    "出库计划撤回 " + o.getOrderNo(),
+                    "原计划出库 " + o.getTotalWeight() + "kg 给客户 " + customerName
+                            + "，原因：" + reason + "。待销售员选择替代批次重新排单。",
+                    operator);
+        }
+        return planned.size();
+    }
+
+    /** 销售员为已撤回出库单选择替代批次重新排单，并向客户说明到货差异。 */
+    @Transactional
+    public OutboundOrder substitute(Long orderId, SubstituteRequest req) {
+        OutboundOrder old = orderRepository.findById(orderId)
+                .orElseThrow(() -> new BizException("原出库单不存在"));
+        if (old.getStatus() != OrderStatus.WITHDRAWN) {
+            throw new BizException("只有已撤回的出库单才能替代排单");
+        }
+        Batch batch = batchRepository.findById(req.getBatchId())
+                .orElseThrow(() -> new BizException("替代批次不存在"));
+        if (batch.getStatus() == BatchStatus.RETURNED) {
+            throw new BizException("替代批次已退货关闭，不能用于替代排单");
+        }
+        ensureSellable(batch);
+        Customer customer = customerRepository.findById(old.getCustomerId())
+                .orElseThrow(() -> new BizException("客户不存在"));
+        validateItems(req.getItems(), batch);
+
+        String operator = req.getOperator() == null ? "销售员" : req.getOperator();
+        OutboundOrder o = buildOrder(batch, customer, req.getItems(), operator,
+                Boolean.TRUE.equals(req.getPriority()), req.getRemark(), null);
+        o.setReplacesOrderId(old.getId());
+        o.setDifferenceNote(req.getDifferenceNote());
+        o = orderRepository.save(o);
+
+        Batch oldBatch = batchRepository.findById(old.getBatchId()).orElse(null);
+        traceService.log(batch.getId(), null, customer.getId(), Stage.OUTBOUND,
+                "替代排单 " + o.getOrderNo(),
+                "替代被撤回单 " + old.getOrderNo() + "（原批次 "
+                        + (oldBatch == null ? old.getBatchId() : oldBatch.getBatchNo())
+                        + " 温度超标处置撤回）。向客户说明到货差异：" + req.getDifferenceNote(),
+                operator);
+        if (oldBatch != null) {
+            traceService.log(oldBatch.getId(), null, customer.getId(), Stage.OUTBOUND,
+                    "撤回计划已由替代批次履约",
+                    "原出库单 " + old.getOrderNo() + " 改由批次 " + batch.getBatchNo() + " 替代排单 "
+                            + o.getOrderNo() + "，客户 " + customer.getName() + " 已告知到货差异。",
+                    operator);
+        }
+        return o;
     }
 
     /** 执行出库：扣减重、释放库位温区、履约锁价、推进批次状态。 */
@@ -138,6 +222,7 @@ public class OutboundService {
             throw new BizException("出库单已执行");
         }
         Batch batch = batchRepository.findById(o.getBatchId()).orElseThrow();
+        ensureSellable(batch);
         Customer customer = customerRepository.findById(o.getCustomerId()).orElseThrow();
         List<OutboundItem> items = itemRepository.findByOutboundId(o.getId());
 
@@ -230,11 +315,11 @@ public class OutboundService {
         return itemRepository.findByOutboundId(orderId);
     }
 
-    private void validateItems(OutboundRequest req, Batch batch) {
-        if (req.getItems() == null || req.getItems().isEmpty()) {
+    private void validateItems(List<OutboundRequest.Item> items, Batch batch) {
+        if (items == null || items.isEmpty()) {
             throw new BizException("出库明细不能为空");
         }
-        for (OutboundRequest.Item it : req.getItems()) {
+        for (OutboundRequest.Item it : items) {
             StockLot lot = lotRepository.findById(it.getLotId())
                     .orElseThrow(() -> new BizException("货位批次不存在"));
             if (!lot.getBatchId().equals(batch.getId())) {
@@ -247,13 +332,13 @@ public class OutboundService {
     }
 
     /** 价格优先级：手工指定 > 客户锁价 > 货位批次结算价。 */
-    private BigDecimal resolvePrice(OutboundRequest req, OutboundRequest.Item item,
-                                    Customer customer, Category cat, Batch batch) {
+    private BigDecimal resolvePrice(BigDecimal overrideUnitPrice, OutboundRequest.Item item,
+                                    Customer customer, Category cat) {
         if (item.getUnitPrice() != null) {
             return item.getUnitPrice();
         }
-        if (req.getOverrideUnitPrice() != null) {
-            return req.getOverrideUnitPrice();
+        if (overrideUnitPrice != null) {
+            return overrideUnitPrice;
         }
         PriceLock lock = findActiveLock(customer.getId(), cat.getCode());
         if (lock != null) {

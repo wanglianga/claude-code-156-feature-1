@@ -37,6 +37,9 @@ app:
   auth:
     secret: ${APP_SECRET:county-cold-chain-secret-2026}
     ttl-hours: 12
+  precool:
+    # 温度超标预冷费单价（元/公斤）
+    fee-per-kg: 0.3
   billing:
     # 分拣工时单价（元/分钟）
     labor-rate-per-minute: 0.6

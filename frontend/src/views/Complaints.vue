@@ -35,12 +35,40 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="visible" title="投诉责任裁定" width="500px">
+    <el-dialog v-model="visible" title="投诉责任裁定" width="640px">
       <el-form :model="form" label-width="110px" v-if="target">
         <el-form-item label="索赔情况">
           {{ target.problemWeight }}kg / 索赔 {{ target.claimAmount }} 元 — {{ target.description }}
         </el-form-item>
-        <el-form-item label="责任方">
+
+        <el-card v-if="evidence" shadow="never" class="evidence-card">
+          <div class="evidence-title">责任证据（平台回看温度超标与货主确认记录）</div>
+          <div v-if="evidence.tempCases?.length">
+            <div v-for="tc in evidence.tempCases" :key="tc.id" class="evidence-item">
+              <el-tag size="small" type="danger">{{ tc.caseNo }}</el-tag>
+              到库 {{ tc.arrivalTemp }}℃（合同 {{ tc.contractMinTemp }}~{{ tc.contractMaxTemp }}℃），
+              抽检腐损 {{ pct(tc.sampleRotRate) }}；
+              <template v-if="tc.ownerDecision">
+                货主「{{ tc.decidedBy }}」确认<b>{{ $dict('OwnerDecision', tc.ownerDecision) }}</b>
+                <template v-if="tc.recheckResult">
+                  ，复检{{ tc.recheckResult === 'PASS' ? '合格' : '不合格' }}（{{ tc.recheckTemp }}℃）
+                </template>
+              </template>
+              <template v-else>（货主未决策）</template>
+            </div>
+          </div>
+          <div v-else class="hint">本批次无温度超标处置记录</div>
+          <el-alert :type="evidence.suggestedResponsibility === 'PENDING' ? 'info' : 'warning'"
+                    :closable="false" style="margin-top:8px"
+                    :title="`平台建议：${$dict('Responsibility', evidence.suggestedResponsibility)}`"
+                    :description="evidence.suggestionReason" />
+          <el-button v-if="evidence.suggestedResponsibility !== 'PENDING'" size="small"
+                     style="margin-top:6px" @click="form.responsibility = evidence.suggestedResponsibility">
+            采用建议责任方
+          </el-button>
+        </el-card>
+
+        <el-form-item label="责任方" style="margin-top:12px">
           <el-radio-group v-model="form.responsibility">
             <el-radio value="OWNER">货主责任（货款扣赔）</el-radio>
             <el-radio value="WAREHOUSE">冷库责任（冷库对客赔付）</el-radio>
@@ -77,18 +105,25 @@ const customers = ref([])
 const batches = ref([])
 const visible = ref(false)
 const target = ref(null)
+const evidence = ref(null)
 const form = reactive({ responsibility: 'OWNER', settledAmount: 0, handler: '', handleResult: '' })
 
 function customerName(id) { return customers.value.find(c => c.id === id)?.name || '#' + id }
 function batchNo(id) { return batches.value.find(b => b.id === id)?.batchNo || '#' + id }
+function pct(v) { return v == null ? '-' : (Number(v) * 100).toFixed(1) + '%' }
 
-function open(row) {
+async function open(row) {
   target.value = row
   Object.assign(form, {
     responsibility: 'OWNER', settledAmount: Number(row.claimAmount || 0),
     handler: '', handleResult: ''
   })
   visible.value = true
+  evidence.value = null
+  evidence.value = await api.get(`/api/complaints/${row.id}/evidence`)
+  if (evidence.value.suggestedResponsibility !== 'PENDING') {
+    form.responsibility = evidence.value.suggestedResponsibility
+  }
 }
 
 async function submit() {
@@ -112,3 +147,10 @@ onMounted(async () => {
   load()
 })
 </script>
+
+<style scoped>
+.evidence-card { background: #fdf6ec; margin-bottom: 4px; }
+.evidence-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #7a5b16; }
+.evidence-item { font-size: 12px; color: #4d5a67; margin-bottom: 4px; line-height: 1.7; }
+.hint { color: #909daa; font-size: 12px; }
+</style>

@@ -35,8 +35,20 @@ public final class DomainEnums {
         public final String desc; MoveReason(String d) { this.desc = d; } }
 
     /** 出库单状态 */
-    public enum OrderStatus { PLANNED("已排单待出库"), OUT("已出库");
+    public enum OrderStatus { PLANNED("已排单待出库"), OUT("已出库"), WITHDRAWN("已撤回");
         public final String desc; OrderStatus(String d) { this.desc = d; } }
+
+    /** 温度超标货主处置选择 */
+    public enum OwnerDecision {
+        DOWNGRADE("降级入库"), RETURN("现场退货"), PRECOOL("预冷后复检");
+        public final String desc; OwnerDecision(String d) { this.desc = d; } }
+
+    /** 温度超标处置单状态 */
+    public enum TempCaseStatus {
+        PENDING("待货主决策"), PRECOOLING("预冷中"), RECHECK_SCHEDULED("已安排待复检"),
+        RECHECK_PASS("复检合格"), RECHECK_FAIL("复检不合格"),
+        DOWNGRADED("已降级入库"), RETURNED("已现场退货");
+        public final String desc; TempCaseStatus(String d) { this.desc = d; } }
 
     /** 客户投诉类型 */
     public enum ComplaintType {
@@ -55,7 +67,7 @@ public final class DomainEnums {
     /** 账单明细类型 */
     public enum BillItemType {
         SALE("销售收入"), STORAGE_FEE("仓储费"), SORT_FEE("分拣费"),
-        LABOR_FEE("分拣工时费"), LOSS_DEDUCT("超阈损耗扣款"), COMPLAINT_DEDUCT("投诉赔付扣款"),
+        LABOR_FEE("分拣工时费"), PRECOOL_FEE("预冷费"), LOSS_DEDUCT("超阈损耗扣款"), COMPLAINT_DEDUCT("投诉赔付扣款"),
         ADVANCE_DEDUCT("预付款抵扣"), RETURN_DEDUCT("退货扣款"), REMAIN_VALUE("期末库存货值");
         public final String desc; BillItemType(String d) { this.desc = d; } }
 
@@ -74,12 +86,14 @@ public final class DomainEnums {
         ORIGINAL_WEIGHT_SETTLE("货主要求按原重结算"),
         COMPLAINT("出库后客户投诉"),
         HIGH_STAY_DAYS("在仓超时高风险"),
-        LOCK_PRICE("锁价客户待履约");
+        LOCK_PRICE("锁价客户待履约"),
+        RECHECK_FAILED("预冷复检不合格"),
+        PLAN_WITHDRAWN("出库计划撤回");
         public final String desc; AlertType(String d) { this.desc = d; } }
 
     /** 追溯链节点阶段 */
     public enum Stage {
-        ARRIVAL("到货登记"), INSPECTION("质检验收"), SORTING("分拣处理"),
+        ARRIVAL("到货登记"), INSPECTION("质检验收"), TEMP_HANDLING("温度超标处置"), SORTING("分拣处理"),
         PUT_IN("入库上架"), TRANSFER("转仓移库"), LOSS("报损"),
         OUTBOUND("出库发运"), COMPLAINT("客户投诉"), SETTLEMENT("财务结算");
         public final String desc; Stage(String d) { this.desc = d; } }

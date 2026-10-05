@@ -5,10 +5,16 @@ import com.county.coldchain.domain.DomainEnums.AlertType;
 import com.county.coldchain.domain.DomainEnums.ComplaintType;
 import com.county.coldchain.domain.DomainEnums.Responsibility;
 import com.county.coldchain.domain.DomainEnums.Stage;
+import com.county.coldchain.domain.entity.Alert;
 import com.county.coldchain.domain.entity.Complaint;
+import com.county.coldchain.domain.entity.Inspection;
 import com.county.coldchain.domain.entity.OutboundOrder;
+import com.county.coldchain.domain.entity.TempExceedCase;
+import com.county.coldchain.repo.AlertRepository;
 import com.county.coldchain.repo.ComplaintRepository;
+import com.county.coldchain.repo.InspectionRepository;
 import com.county.coldchain.repo.OutboundOrderRepository;
+import com.county.coldchain.repo.TempExceedCaseRepository;
 import com.county.coldchain.support.BizException;
 import com.county.coldchain.web.dto.ComplaintRequest;
 import com.county.coldchain.web.dto.ComplaintResolveRequest;
@@ -16,9 +22,13 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** 出库后客户投诉：坏果等问题回挂批次链，裁定赔付进入货主账单扣款。 */
 @Service
@@ -27,6 +37,9 @@ public class ComplaintService {
 
     private final ComplaintRepository complaintRepository;
     private final OutboundOrderRepository outboundRepository;
+    private final TempExceedCaseRepository tempCaseRepository;
+    private final InspectionRepository inspectionRepository;
+    private final AlertRepository alertRepository;
     private final AlertService alertService;
     private final TraceService traceService;
 
@@ -89,6 +102,69 @@ public class ComplaintService {
     @Transactional(readOnly = true)
     public List<Complaint> list() {
         return complaintRepository.findAll();
+    }
+
+    /**
+     * 责任判定证据：平台回看该批次温度超标处置单（含货主确认记录）、质检记录与相关告警，
+     * 并据此给出责任方建议，辅助管理端裁定。
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> evidence(Long complaintId) {
+        Complaint c = complaintRepository.findById(complaintId)
+                .orElseThrow(() -> new BizException("投诉不存在"));
+        List<TempExceedCase> cases = tempCaseRepository.findByBatchIdOrderByCreatedAtDesc(c.getBatchId());
+        List<Inspection> inspections = inspectionRepository.findByBatchIdOrderByInspectedAtDesc(c.getBatchId());
+        List<Alert> alerts = alertRepository.findByBatchIdOrderByCreatedAtDesc(c.getBatchId());
+
+        Responsibility suggested = Responsibility.PENDING;
+        String reason = "本批次无到货温度超标处置记录，请按常规追溯（在仓温控/出库交接/运输环节）裁定。";
+        TempExceedCase decided = cases.stream()
+                .filter(x -> x.getOwnerDecision() != null).findFirst().orElse(null);
+        if (decided != null) {
+            String rot = decided.getSampleRotRate() == null ? "未抽检"
+                    : decided.getSampleRotRate().multiply(BigDecimal.valueOf(100))
+                    .setScale(1, RoundingMode.HALF_UP) + "%";
+            switch (decided.getOwnerDecision()) {
+                case DOWNGRADE -> {
+                    suggested = Responsibility.OWNER;
+                    reason = String.format(
+                            "处置单 %s：到库温度 %s℃ 超合同区间 [%s,%s]℃，抽检腐损率 %s；货主「%s」已确认降级入库"
+                                    + "（售价折让、保鲜期缩短），坏果属到货质量风险，建议裁定货主责任。",
+                            decided.getCaseNo(), decided.getArrivalTemp(),
+                            decided.getContractMinTemp(), decided.getContractMaxTemp(), rot,
+                            decided.getDecidedBy());
+                }
+                case RETURN -> {
+                    suggested = Responsibility.OWNER;
+                    reason = String.format(
+                            "处置单 %s：货主「%s」已确认温度超标现场退货，若仍有该批货品流出属货源问题，建议裁定货主责任。",
+                            decided.getCaseNo(), decided.getDecidedBy());
+                }
+                case PRECOOL -> {
+                    if ("FAIL".equals(decided.getRecheckResult())) {
+                        suggested = Responsibility.WAREHOUSE;
+                        reason = String.format(
+                                "处置单 %s：预冷复检不合格（%s℃），该批次应撤回不得销售；若仍流出到客户，"
+                                        + "属冷库冻结/管控失职，建议裁定冷库责任。",
+                                decided.getCaseNo(), decided.getRecheckTemp());
+                    } else if ("PASS".equals(decided.getRecheckResult())) {
+                        reason = String.format(
+                                "处置单 %s：预冷复检合格（%s℃）后出库，到货温度风险已消除，"
+                                        + "建议核查在仓温控与运输环节后裁定。",
+                                decided.getCaseNo(), decided.getRecheckTemp());
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("complaint", c);
+        m.put("tempCases", cases);
+        m.put("inspections", inspections);
+        m.put("alerts", alerts);
+        m.put("suggestedResponsibility", suggested.name());
+        m.put("suggestionReason", reason);
+        return m;
     }
 
     @Transactional(readOnly = true)

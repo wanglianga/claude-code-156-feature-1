@@ -4,6 +4,7 @@ import com.county.coldchain.domain.entity.OutboundItem;
 import com.county.coldchain.domain.entity.OutboundOrder;
 import com.county.coldchain.service.OutboundService;
 import com.county.coldchain.web.dto.OutboundRequest;
+import com.county.coldchain.web.dto.SubstituteRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -36,6 +37,12 @@ public class OutboundController {
     @PostMapping("/{id}/execute")
     public OutboundOrder execute(@PathVariable Long id, @RequestParam(required = false) String operator) {
         return outboundService.execute(id, operator);
+    }
+
+    @Operation(summary = "替代排单：为已撤回出库单选择替代批次，并向客户说明到货差异")
+    @PostMapping("/{id}/substitute")
+    public OutboundOrder substitute(@PathVariable Long id, @Valid @RequestBody SubstituteRequest req) {
+        return outboundService.substitute(id, req);
     }
 
     @Operation(summary = "出库单列表（PLANNED/OUT）")

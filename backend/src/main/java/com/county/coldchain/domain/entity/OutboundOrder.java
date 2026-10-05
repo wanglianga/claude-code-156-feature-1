@@ -34,6 +34,14 @@ public class OutboundOrder extends BaseEntity {
     private BigDecimal totalWeight = BigDecimal.ZERO;
     @Enumerated(EnumType.STRING)
     private OrderStatus status = OrderStatus.PLANNED;
+    /** 复检不合格等原因被自动撤回时的原因说明 */
+    @jakarta.persistence.Column(length = 1000)
+    private String withdrawReason;
+    /** 本单为替代单时，指向被撤回的原出库单 */
+    private Long replacesOrderId;
+    /** 替代排单时向客户说明的到货差异 */
+    @jakarta.persistence.Column(length = 1000)
+    private String differenceNote;
     private String operator;
     private LocalDateTime plannedAt;
     private LocalDateTime outAt;

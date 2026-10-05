@@ -18,6 +18,7 @@ import com.county.coldchain.domain.entity.SortItem;
 import com.county.coldchain.domain.entity.SortingRecord;
 import com.county.coldchain.domain.entity.StockLot;
 import com.county.coldchain.domain.entity.StockMove;
+import com.county.coldchain.domain.entity.TempExceedCase;
 import com.county.coldchain.repo.AdvanceLedgerRepository;
 import com.county.coldchain.repo.BatchRepository;
 import com.county.coldchain.repo.BillItemRepository;
@@ -31,6 +32,7 @@ import com.county.coldchain.repo.SortItemRepository;
 import com.county.coldchain.repo.SortingRecordRepository;
 import com.county.coldchain.repo.StockLotRepository;
 import com.county.coldchain.repo.StockMoveRepository;
+import com.county.coldchain.repo.TempExceedCaseRepository;
 import com.county.coldchain.support.BizException;
 import com.county.coldchain.web.dto.BillGenerateRequest;
 import com.county.coldchain.web.dto.BillSettleRequest;
@@ -69,6 +71,7 @@ public class BillingService {
     private final OutboundItemRepository outboundItemRepository;
     private final ComplaintRepository complaintRepository;
     private final AdvanceLedgerRepository advanceRepository;
+    private final TempExceedCaseRepository tempCaseRepository;
     private final TraceService traceService;
 
     @Value("${app.billing.labor-rate-per-minute:0.6}")
@@ -150,6 +153,18 @@ public class BillingService {
                             + weightDays + " kg·天 × " + cat.getStorageFeeRate() + "）",
                     null, cat.getStorageFeeRate(), fee, days);
             storageFee = storageFee.add(fee);
+        }
+
+        // 3.5) 预冷费：温度超标选择预冷复检的批次，按预冷重量一次性计收（复检合格与否均计）
+        BigDecimal precoolTotal = BigDecimal.ZERO;
+        for (TempExceedCase tc : tempCaseRepository.findByBatchIdOrderByCreatedAtDesc(batch.getId())) {
+            if (tc.getPrecoolFee() != null && tc.getPrecoolFee().signum() > 0) {
+                BigDecimal fee = tc.getPrecoolFee().negate();
+                addItem(bill, BillItemType.PRECOOL_FEE,
+                        "预冷费 " + tc.getCaseNo() + "（温度超标预冷 " + tc.getPrecoolWeight() + "kg）",
+                        tc.getPrecoolWeight(), null, fee, null);
+                precoolTotal = precoolTotal.add(fee);
+            }
         }
 
         // 4) 分拣服务费 + 工时费
@@ -268,7 +283,7 @@ public class BillingService {
         bill.setAdvanceDeducted(deduct);
 
         grossValue = grossValue.add(lossComp);
-        BigDecimal deduction = storageFee.add(sortFeeTotal).add(laborTotal)
+        BigDecimal deduction = storageFee.add(precoolTotal).add(sortFeeTotal).add(laborTotal)
                 .add(lossDeduct).add(complaintDeduct).subtract(deduct);
         bill.setGrossValue(grossValue);
         bill.setTotalDeduction(deduction);

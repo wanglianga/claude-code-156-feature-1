@@ -19,6 +19,9 @@
         <el-menu-item index="/inspection">
           <el-icon><CircleCheck /></el-icon><span>质检验收</span>
         </el-menu-item>
+        <el-menu-item index="/temp-cases">
+          <el-icon><Sunny /></el-icon><span>温度超标处置</span>
+        </el-menu-item>
         <el-menu-item index="/sorting">
           <el-icon><ScaleToOriginal /></el-icon><span>分拣处理</span>
         </el-menu-item>

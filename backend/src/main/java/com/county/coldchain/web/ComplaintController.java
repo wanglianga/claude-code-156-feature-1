@@ -48,4 +48,10 @@ public class ComplaintController {
     public List<Complaint> byBatch(@PathVariable Long batchId) {
         return complaintService.byBatch(batchId);
     }
+
+    @Operation(summary = "责任判定证据：回看温度超标处置与货主确认记录，给出责任方建议")
+    @GetMapping("/{id}/evidence")
+    public java.util.Map<String, Object> evidence(@PathVariable Long id) {
+        return complaintService.evidence(id);
+    }
 }

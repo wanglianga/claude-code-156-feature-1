@@ -7,6 +7,7 @@
           <el-radio-group v-model="tab" size="small" style="margin-bottom:10px" @change="loadOrders">
             <el-radio-button value="PLANNED">待出库（{{ orders.length }}）</el-radio-button>
             <el-radio-button value="OUT">已出库</el-radio-button>
+            <el-radio-button value="WITHDRAWN">已撤回</el-radio-button>
             <el-radio-button value="">全部</el-radio-button>
           </el-radio-group>
           <el-table :data="orders" size="small">
@@ -22,19 +23,28 @@
             </el-table-column>
             <el-table-column prop="totalWeight" label="重量kg" width="85" />
             <el-table-column prop="totalAmount" label="金额元" width="100" />
-            <el-table-column label="标记" width="140">
+            <el-table-column label="标记" width="150">
               <template #default="{ row }">
                 <el-tag v-if="row.priority" type="danger" size="small">优先</el-tag>
                 <el-tag v-if="row.priceLocked" type="warning" size="small">
                   锁价{{ row.lockedPrice }}
                 </el-tag>
+                <el-tooltip v-if="row.replacesOrderId" :content="row.differenceNote" placement="top">
+                  <el-tag type="info" size="small">替代单</el-tag>
+                </el-tooltip>
               </template>
             </el-table-column>
-            <el-table-column label="状态/操作">
+            <el-table-column label="状态/操作" width="200">
               <template #default="{ row }">
                 <template v-if="row.status === 'PLANNED'">
                   <el-tag type="warning" size="small">待出库</el-tag>
                   <el-button link type="primary" @click="execute(row)">执行出库</el-button>
+                </template>
+                <template v-else-if="row.status === 'WITHDRAWN'">
+                  <el-tooltip :content="row.withdrawReason" placement="top">
+                    <el-tag type="danger" size="small">已撤回</el-tag>
+                  </el-tooltip>
+                  <el-button link type="primary" @click="openSubstitute(row)">替代排单</el-button>
                 </template>
                 <template v-else>
                   <el-tag type="success" size="small">已出库</el-tag>
@@ -53,9 +63,12 @@
             <el-form-item label="批次">
               <el-select v-model="form.batchId" filterable style="width:100%" @change="onBatchChange">
                 <el-option v-for="b in outBatches" :key="b.id"
-                           :label="`${b.batchNo} ${catName(b.categoryId)} 可售${b.netWeight - b.outWeight - b.lossWeight}kg`"
-                           :value="b.id" />
+                           :label="`${b.batchNo} ${catName(b.categoryId)} 可售${b.netWeight - b.outWeight - b.lossWeight}kg${b.saleFrozen ? '（冻结中）' : ''}`"
+                           :value="b.id" :disabled="b.saleFrozen" />
               </el-select>
+              <div class="hint" v-if="frozenCount > 0">
+                {{ frozenCount }} 个批次温度超标预冷复检中，已冻结销售不可排单
+              </div>
             </el-form-item>
             <el-form-item label="客户">
               <el-select v-model="form.customerId" filterable style="width:100%">
@@ -130,6 +143,56 @@
         <el-button type="primary" @click="submitComplaint">提交投诉</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="substituteVisible" title="替代排单（原单已撤回）" width="640px">
+      <template v-if="substituteOrder">
+        <el-alert type="warning" :closable="false" style="margin-bottom:12px"
+                  :title="`原单 ${substituteOrder.orderNo} → ${customerName(substituteOrder.customerId)} ${substituteOrder.totalWeight}kg 已撤回：${substituteOrder.withdrawReason || ''}`" />
+        <el-form label-width="110px">
+          <el-form-item label="替代批次">
+            <el-select v-model="substituteForm.batchId" filterable style="width:100%"
+                       @change="substituteForm.items = [{ lotId: null, weight: substituteOrder.totalWeight, unitPrice: null }]">
+              <el-option v-for="b in substituteBatches" :key="b.id"
+                         :label="`${b.batchNo} ${catName(b.categoryId)} 可售${b.netWeight - b.outWeight - b.lossWeight}kg`"
+                         :value="b.id" />
+            </el-select>
+          </el-form-item>
+          <el-table :data="substituteForm.items" size="small" border style="margin-bottom:10px">
+            <el-table-column label="货位/等级" min-width="180">
+              <template #default="{ row }">
+                <el-select v-model="row.lotId" size="small" @change="onSubstituteLotChange(row)">
+                  <el-option v-for="l in substituteLots" :key="l.id"
+                             :label="`${lotZone(l.locationId)} ${$dict('Grade', l.grade)} ${l.currentWeight}kg@${l.unitPrice}`"
+                             :value="l.id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="重量kg" width="140">
+              <template #default="{ row }">
+                <el-input-number v-model="row.weight" :min="0" :precision="2" size="small"
+                                 :max="lotWeight(row.lotId)" />
+              </template>
+            </el-table-column>
+            <el-table-column label="单价" width="120">
+              <template #default="{ row }">
+                <el-input-number v-model="row.unitPrice" :min="0" :precision="2" size="small" />
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-form-item label="到货差异说明">
+            <el-input v-model="substituteForm.differenceNote" type="textarea" :rows="3"
+                      placeholder="必填：向客户说明原批次温度超标复检不合格、替代批次的品类/等级/到货温度差异" />
+          </el-form-item>
+          <el-form-item label="销售员">
+            <el-input v-model="substituteForm.operator" />
+          </el-form-item>
+        </el-form>
+      </template>
+      <template #footer>
+        <el-button @click="substituteVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="submitSubstitute">确认替代排单</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -155,8 +218,13 @@ const form = reactive({
 
 const outBatches = computed(() =>
   batches.value.filter(b => ['IN_STORAGE', 'PARTIAL_OUT'].includes(b.status)))
+const frozenCount = computed(() => outBatches.value.filter(b => b.saleFrozen).length)
 const availableLots = computed(() =>
   inLots.value.filter(l => l.batchId === form.batchId && Number(l.currentWeight) > 0))
+const substituteBatches = computed(() =>
+  batches.value.filter(b => ['IN_STORAGE', 'PARTIAL_OUT'].includes(b.status) && !b.saleFrozen))
+const substituteLots = computed(() =>
+  inLots.value.filter(l => l.batchId === substituteForm.batchId && Number(l.currentWeight) > 0))
 
 function customerName(id) { return customers.value.find(c => c.id === id)?.name || '#' + id }
 function batchNo(id) { return batches.value.find(b => b.id === id)?.batchNo || '#' + id }
@@ -225,6 +293,55 @@ async function submitComplaint() {
   complaintVisible.value = false
 }
 
+const substituteVisible = ref(false)
+const substituteOrder = ref(null)
+const substituteForm = reactive({
+  batchId: null, differenceNote: '', operator: '销售员',
+  items: [{ lotId: null, weight: 0, unitPrice: null }]
+})
+
+function openSubstitute(row) {
+  substituteOrder.value = row
+  Object.assign(substituteForm, {
+    batchId: null, differenceNote: '', operator: '销售员',
+    items: [{ lotId: null, weight: Number(row.totalWeight) || 0, unitPrice: null }]
+  })
+  substituteVisible.value = true
+}
+
+function onSubstituteLotChange(row) {
+  if (!row.unitPrice) {
+    const lot = inLots.value.find(l => l.id === row.lotId)
+    row.unitPrice = lot ? Number(lot.unitPrice) : null
+  }
+}
+
+async function submitSubstitute() {
+  const items = substituteForm.items.filter(i => i.lotId && Number(i.weight) > 0)
+  if (!substituteForm.batchId || !items.length) {
+    ElMessage.warning('请选择替代批次与货位')
+    return
+  }
+  if (!substituteForm.differenceNote.trim()) {
+    ElMessage.warning('必须填写向客户说明的到货差异')
+    return
+  }
+  saving.value = true
+  try {
+    const o = await api.post(`/api/outbounds/${substituteOrder.value.id}/substitute`, {
+      batchId: substituteForm.batchId,
+      items,
+      differenceNote: substituteForm.differenceNote,
+      operator: substituteForm.operator
+    })
+    ElMessage.success('替代排单成功 ' + o.orderNo + '，客户已告知到货差异')
+    substituteVisible.value = false
+    await reload()
+  } finally {
+    saving.value = false
+  }
+}
+
 async function loadOrders() {
   orders.value = await api.get('/api/outbounds' + (tab.value ? '?status=' + tab.value : ''))
 }
@@ -249,3 +366,7 @@ onMounted(async () => {
   reload()
 })
 </script>
+
+<style scoped>
+.hint { color: #909daa; font-size: 12px; margin-top: 4px; }
+</style>

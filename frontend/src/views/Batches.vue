@@ -35,9 +35,12 @@
         <el-table-column label="预计客户" width="150">
           <template #default="{ row }">{{ customerName(row.plannedCustomerId) }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
             <el-tag size="small" :type="statusTag(row.status)">{{ $dict('BatchStatus', row.status) }}</el-tag>
+            <el-tooltip v-if="row.saleFrozen" content="温度超标预冷复检中，复检合格前冻结对外销售" placement="top">
+              <el-tag size="small" type="danger" style="margin-left:4px">冻结</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="可售/损耗/已出" width="170">

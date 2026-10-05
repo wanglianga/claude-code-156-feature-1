@@ -97,6 +97,9 @@
               <el-descriptions-item label="锁价">{{ data.batch.lockedPrice || '-' }} 元/kg</el-descriptions-item>
               <el-descriptions-item label="状态">
                 <el-tag size="small">{{ $dict('BatchStatus', data.batch.status) }}</el-tag>
+                <el-tag v-if="data.batch.saleFrozen" size="small" type="danger" style="margin-left:4px">
+                  冻结销售（预冷复检中）
+                </el-tag>
               </el-descriptions-item>
             </el-descriptions>
             <div class="weight-bar">
@@ -142,6 +145,34 @@
                 </div>
               </el-timeline-item>
             </el-timeline>
+          </el-card>
+
+          <el-card shadow="never" style="margin-bottom:12px" v-if="data.tempCases?.length">
+            <div class="card-title">温度超标处置单</div>
+            <div v-for="tc in data.tempCases" :key="tc.id" class="temp-case">
+              <div>
+                <span class="mono">{{ tc.caseNo }}</span>
+                <el-tag size="small" :type="tc.recheckResult === 'FAIL' ? 'danger' : 'warning'"
+                        style="margin-left:6px">{{ $dict('TempCaseStatus', tc.status) }}</el-tag>
+              </div>
+              <div class="sort-item">
+                到库 {{ tc.arrivalTemp }}℃（合同 {{ tc.contractMinTemp }}~{{ tc.contractMaxTemp }}℃），
+                抽检腐损 {{ pct(tc.sampleRotRate) }}，照片 {{ (tc.photoUrls || '').split(',').filter(Boolean).length }} 张
+              </div>
+              <div class="sort-item" v-if="tc.ownerDecision">
+                货主「{{ tc.decidedBy }}」确认：{{ $dict('OwnerDecision', tc.ownerDecision) }}
+                <template v-if="tc.ownerDecision === 'DOWNGRADE'">
+                  （{{ $dict('Grade', tc.downgradeGrade) }}，折让 {{ pct(tc.priceDiscount) }}，保鲜期 {{ tc.shelfLifeDays }} 天）
+                </template>
+                <template v-if="tc.recheckSlot">
+                  ，复检时段 {{ fmt(tc.recheckSlot) }}，预冷费 {{ tc.precoolFee }} 元
+                </template>
+                <template v-if="tc.recheckResult">
+                  ，复检{{ tc.recheckResult === 'PASS' ? '合格' : '不合格' }}（{{ tc.recheckTemp }}℃）
+                </template>
+              </div>
+              <div class="sort-item" v-if="tc.decisionNote">确认意见：{{ tc.decisionNote }}</div>
+            </div>
           </el-card>
 
           <el-card shadow="never" style="margin-bottom:12px">
@@ -204,8 +235,8 @@ function moveReason(r) {
 }
 function stageType(s) {
   return {
-    ARRIVAL: 'primary', INSPECTION: 'primary', SORTING: 'warning', PUT_IN: 'success',
-    TRANSFER: 'warning', LOSS: 'danger', OUTBOUND: 'success',
+    ARRIVAL: 'primary', INSPECTION: 'primary', TEMP_HANDLING: 'danger', SORTING: 'warning',
+    PUT_IN: 'success', TRANSFER: 'warning', LOSS: 'danger', OUTBOUND: 'success',
     COMPLAINT: 'danger', SETTLEMENT: 'success'
   }[s] || 'info'
 }
@@ -226,4 +257,6 @@ onMounted(async () => {
   font-size: 12px; color: #5a6673; background: #f7f9fa; padding: 8px; border-radius: 6px;
 }
 .sort-item { font-size: 12px; color: #5a6673; margin-top: 2px; }
+.temp-case { border-bottom: 1px dashed #e4e9ef; padding: 6px 0; }
+.temp-case:last-child { border-bottom: none; }
 </style>
