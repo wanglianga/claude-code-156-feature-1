@@ -59,6 +59,7 @@ public class DataSeeder implements CommandLineRunner {
         create("sorter", "sort123", "分拣员·孙姐", UserRole.SORTER);
         create("dispatcher", "dispatch123", "调度员·赵调度", UserRole.DISPATCHER);
         create("finance", "finance123", "财务·钱会计", UserRole.FINANCE);
+        create("sales", "sales123", "销售员·陈小满", UserRole.SALES);
         create("viewer", "view123", "监管只读账号", UserRole.VIEWER);
     }
 

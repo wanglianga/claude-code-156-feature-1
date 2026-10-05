@@ -35,12 +35,51 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="visible" title="投诉责任裁定" width="500px">
+    <el-dialog v-model="visible" title="投诉责任裁定" width="640px">
       <el-form :model="form" label-width="110px" v-if="target">
         <el-form-item label="索赔情况">
           {{ target.problemWeight }}kg / 索赔 {{ target.claimAmount }} 元 — {{ target.description }}
         </el-form-item>
-        <el-form-item label="责任方">
+
+        <!-- 责任判定辅助：回看温度超标与货主确认记录 -->
+        <el-card v-if="evidence" shadow="never" class="evidence-box">
+          <div class="evidence-title">责任判定辅助（平台回看批次链记录）</div>
+          <div class="evidence-line">
+            到货温度 <b :class="evidence.tempExceeded ? 'risk-critical' : 'ok-text'">{{ evidence.arrivalTemp }}℃</b>
+            （合同区间 {{ evidence.contractMinTemp }}~{{ evidence.contractMaxTemp }}℃）
+            <el-tag v-if="evidence.tempExceeded" size="small" type="danger">到货温度超标</el-tag>
+            <el-tag v-else size="small" type="success">到货温度合规</el-tag>
+            <el-tag v-if="evidence.zoneFaultAlerts > 0" size="small" type="warning" style="margin-left:6px">
+              在仓温区故障 {{ evidence.zoneFaultAlerts }} 次
+            </el-tag>
+          </div>
+          <template v-if="evidence.tempExceptions?.length">
+            <div v-for="e in evidence.tempExceptions" :key="e.recordNo" class="evidence-record">
+              <el-tag size="small" effect="plain">{{ e.recordNo }}</el-tag>
+              复测 {{ e.measuredTemp }}℃，抽检腐损 {{ e.sampledRotRate != null ? (e.sampledRotRate * 100).toFixed(1) + '%' : '—' }}
+              → 货主 <b>{{ e.decidedBy || '—' }}</b> 确认【{{ e.decisionDesc }}】
+              <el-tag v-if="e.recheckResultDesc" size="small"
+                      :type="e.recheckResult === 'PASSED' ? 'success' : 'danger'">
+                {{ e.recheckResultDesc }}
+              </el-tag>
+              <div class="hint" v-if="e.ownerConfirmNote">确认备注：{{ e.ownerConfirmNote }}</div>
+              <div class="hint" v-if="e.effectNote">{{ e.effectNote }}</div>
+            </div>
+          </template>
+          <div v-else class="hint">该批次无温度超标处置记录</div>
+          <el-alert :title="evidence.suggestionReason" type="info" :closable="false"
+                    style="margin-top:8px" />
+          <div v-if="evidence.suggestedResponsibility" style="margin-top:8px">
+            平台建议：<el-tag type="danger" effect="dark">
+              {{ $dict('Responsibility', evidence.suggestedResponsibility) }}
+            </el-tag>
+            <el-button link type="primary" @click="form.responsibility = evidence.suggestedResponsibility">
+              采纳建议
+            </el-button>
+          </div>
+        </el-card>
+
+        <el-form-item label="责任方" style="margin-top:12px">
           <el-radio-group v-model="form.responsibility">
             <el-radio value="OWNER">货主责任（货款扣赔）</el-radio>
             <el-radio value="WAREHOUSE">冷库责任（冷库对客赔付）</el-radio>
@@ -77,18 +116,26 @@ const customers = ref([])
 const batches = ref([])
 const visible = ref(false)
 const target = ref(null)
+const evidence = ref(null)
 const form = reactive({ responsibility: 'OWNER', settledAmount: 0, handler: '', handleResult: '' })
 
 function customerName(id) { return customers.value.find(c => c.id === id)?.name || '#' + id }
 function batchNo(id) { return batches.value.find(b => b.id === id)?.batchNo || '#' + id }
 
-function open(row) {
+async function open(row) {
   target.value = row
   Object.assign(form, {
     responsibility: 'OWNER', settledAmount: Number(row.claimAmount || 0),
     handler: '', handleResult: ''
   })
+  evidence.value = null
   visible.value = true
+  try {
+    evidence.value = await api.get(`/api/complaints/${row.id}/evidence`)
+    if (evidence.value.suggestedResponsibility) {
+      form.responsibility = evidence.value.suggestedResponsibility
+    }
+  } catch (e) { /* 辅助信息加载失败不影响裁定 */ }
 }
 
 async function submit() {
@@ -112,3 +159,16 @@ onMounted(async () => {
   load()
 })
 </script>
+
+<style scoped>
+.evidence-box { background: #f7f9fa; margin-bottom: 4px; }
+.evidence-title { font-weight: 600; margin-bottom: 6px; }
+.evidence-line { font-size: 13px; margin-bottom: 6px; }
+.evidence-record {
+  font-size: 12px; color: #4a5560; border-top: 1px dashed #dde4ea;
+  padding: 6px 0; line-height: 1.8;
+}
+.hint { color: #909daa; font-size: 12px; }
+.risk-critical { color: #c0392b; font-weight: 700; }
+.ok-text { color: #1f6f54; }
+</style>

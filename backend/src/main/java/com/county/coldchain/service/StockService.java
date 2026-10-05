@@ -201,6 +201,11 @@ public class StockService {
     }
 
     @Transactional(readOnly = true)
+    public List<StockLot> precoolLots() {
+        return lotRepository.findByStatus("PRECOOL");
+    }
+
+    @Transactional(readOnly = true)
     public List<StockLot> inStorageLots() {
         return lotRepository.findByStatus("IN");
     }

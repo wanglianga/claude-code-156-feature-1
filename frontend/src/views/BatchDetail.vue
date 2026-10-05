@@ -97,6 +97,8 @@
               <el-descriptions-item label="锁价">{{ data.batch.lockedPrice || '-' }} 元/kg</el-descriptions-item>
               <el-descriptions-item label="状态">
                 <el-tag size="small">{{ $dict('BatchStatus', data.batch.status) }}</el-tag>
+                <el-tag v-if="data.batch.saleFrozen" size="small" type="danger" effect="plain"
+                        style="margin-left:6px">冻结销售</el-tag>
               </el-descriptions-item>
             </el-descriptions>
             <div class="weight-bar">

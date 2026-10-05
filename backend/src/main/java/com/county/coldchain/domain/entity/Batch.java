@@ -57,6 +57,8 @@ public class Batch extends BaseEntity {
     private BigDecimal lockedPrice;
     /** 货主要求按原重结算（争议开关） */
     private Boolean settleByOriginalWeight = false;
+    /** 预冷待复检期间冻结对外销售（禁止执行出库） */
+    private Boolean saleFrozen = false;
     @Enumerated(EnumType.STRING)
     private BatchStatus status = BatchStatus.REGISTERED;
 

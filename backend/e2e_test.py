@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""端到端业务链验证：到货→质检→分拣→上架→预付款→出库→投诉→温区故障转仓→报损→账单→追溯→看板。"""
+"""端到端业务链验证：到货→质检→分拣→上架→预付款→出库→投诉→温区故障转仓→报损→账单→追溯→看板；
+以及到货温度超标处置链：降级入库/现场退货/预冷复检（不合格撤回出库计划→替代重排）→投诉责任回看。"""
 import json
 import urllib.request
 import urllib.error
@@ -208,6 +209,216 @@ print(f"  应付货主净额={settled['netPayable']} 预付款抵扣={settled['a
 
 # ---------- 17. 退货批次不允许账单 ----------
 call("POST", "/api/bills/generate", {"batchId": B3}, expect=400)
+
+# ==================== 到货温度超标处置（新增链路） ====================
+# ---------- T1. 草莓批次D：预冷后复检 → 不合格 → 自动撤回出库计划 → 销售员替代重排 ----------
+bD = call("POST", "/api/batches/arrival", {
+    "ownerId": 2, "categoryId": 2, "origin": "青山乡莓香村",
+    "productionDate": "2026-10-05", "grossWeight": 500,
+    "arrivalTemp": 9, "packaging": "泡沫箱加冰",
+    "certificateNo": "QY-CM-20261005-04", "issuingOrg": "县农检中心",
+    "certIssueDate": "2026-10-05", "certificateVerified": True,
+    "vehicleNo": "鲁Q·M5520", "mixedLoad": False,
+    "plannedCustomerId": 2, "settleMethod": "CONSIGN",
+    "operator": "赵调度"
+})
+BD = bD["id"]
+
+# 质检员登记温度超标处置单（温度/到货时间/车厢照片/抽检腐损率）
+te1 = call("POST", "/api/temp-exceptions", {
+    "batchId": BD, "measuredTemp": 8.5,
+    "cabinPhotos": ["https://example.com/cabin-d1.jpg", "https://example.com/cabin-d2.jpg"],
+    "sampledRotRate": 0.06, "inspector": "李检",
+    "remark": "车厢冰袋已融化，果面发软"
+})
+T1 = te1["id"]
+assert te1["status"] == "PENDING_DECISION"
+assert float(te1["contractMaxTemp"]) == 4.0
+
+# 三种处置方式影响预估（保鲜期/仓储费/售价）
+opts = call("GET", f"/api/temp-exceptions/{T1}/options")
+by_decision = {o["decision"]: o for o in opts}
+assert by_decision["DOWNGRADE_ACCEPT"]["shelfLifeDays"] == 2
+assert float(by_decision["PRECOOL_RECHECK"]["expectedUnitPrice"]) == 22.5
+assert float(by_decision["PRECOOL_RECHECK"]["precoolFeeRate"]) == 0.2
+assert float(by_decision["ONSITE_RETURN"]["expectedUnitPrice"]) == 0.0
+
+# 未办结前禁止重复登记
+call("POST", "/api/temp-exceptions", {"batchId": BD, "measuredTemp": 8}, expect=400)
+
+# 货主选择预冷后复检：安排复检时段与暂存温区，冻结对外销售
+call("POST", f"/api/temp-exceptions/{T1}/decision", {
+    "decision": "PRECOOL_RECHECK", "decidedBy": "周社长",
+    "ownerConfirmNote": "已知悉温度超标，选择预冷后复检",
+    "precoolZoneId": 1, "recheckSlotAt": "2026-10-05T14:00:00"
+})
+bd_mid = call("GET", f"/api/batches/{BD}")
+assert bd_mid["status"] == "PRECOOLING" and bd_mid["saleFrozen"] is True
+lot_d = [l for l in call("GET", "/api/stock/precool") if l["batchId"] == BD][0]
+assert float(lot_d["currentWeight"]) == 500.0
+occ_mid = [z for z in call("GET", "/api/masters/zones") if z["id"] == 1][0]["occupiedKg"]
+
+# 复检前已分配给客户的出库计划（允许排单预售，但冻结发货）
+oD = call("POST", "/api/outbounds/plan", {
+    "customerId": 2, "batchId": BD, "operator": "赵调度",
+    "items": [{"lotId": lot_d["id"], "weight": 100}]
+})
+OD = oD["id"]
+call("POST", f"/api/outbounds/{OD}/execute?operator=赵调度", None, expect=400)  # 冻结拦截
+
+# 复检不合格 → 整批退货 + 出库计划自动撤回
+rk1 = call("POST", f"/api/temp-exceptions/{T1}/recheck", {
+    "recheckTemp": 7, "recheckRotRate": 0.12, "recheckBy": "李检",
+    "note": "预冷4小时后复测仍超标"
+})
+assert rk1["recheckResult"] == "FAILED" and rk1["status"] == "CLOSED"
+bd_final = call("GET", f"/api/batches/{BD}")
+assert bd_final["status"] == "RETURNED" and bd_final["saleFrozen"] is False
+assert float(bd_final["returnedWeight"]) == 500.0
+withdrawn = call("GET", "/api/outbounds?status=WITHDRAWN")
+w_od = [o for o in withdrawn if o["id"] == OD][0]
+assert "复检不合格" in w_od["withdrawReason"]
+assert any(a["type"] == "ORDER_WITHDRAWN" for a in call("GET", "/api/alerts/open"))
+occ_after = [z for z in call("GET", "/api/masters/zones") if z["id"] == 1][0]["occupiedKg"]
+assert float(occ_after) == float(occ_mid) - 500.0, "暂存温区占用应释放"
+
+# 销售员选择替代批次重排，并向客户说明到货差异
+lot_b2 = [l for l in call("GET", "/api/stock/in-storage") if l["batchId"] == B2][0]
+sub = call("POST", f"/api/outbounds/{OD}/substitute", {
+    "batchId": B2, "operator": "销售员·陈小满",
+    "items": [{"lotId": lot_b2["id"], "weight": 100}],
+    "note": "原批次预冷复检不合格已退货，以同合作社在库A级草莓履约，复测温度合格，单价不变"
+})
+OS = sub["id"]
+assert sub["substitutedFromOrderId"] == OD and sub["customerId"] == 2
+assert float(sub["totalWeight"]) == 100.0
+w_od2 = [o for o in call("GET", "/api/outbounds?status=WITHDRAWN") if o["id"] == OD][0]
+assert w_od2["substitutedByOrderId"] == OS
+# 重复替代 / 跨品类替代均拦截
+call("POST", f"/api/outbounds/{OD}/substitute", {
+    "batchId": B2, "items": [{"lotId": lot_b2["id"], "weight": 10}], "note": "x"}, expect=400)
+call("POST", f"/api/outbounds/{OS}/execute?operator=赵调度", None)
+
+# ---------- T2. 草莓批次E：降级入库 → 出库 → 客户投诉 → 平台回看温度超标与货主确认记录 ----------
+bE = call("POST", "/api/batches/arrival", {
+    "ownerId": 2, "categoryId": 2, "origin": "青山乡莓香村",
+    "productionDate": "2026-10-05", "grossWeight": 200,
+    "arrivalTemp": 8, "packaging": "纸盒",
+    "certificateNo": "QY-CM-20261005-05", "issuingOrg": "县农检中心",
+    "certIssueDate": "2026-10-05", "certificateVerified": True,
+    "vehicleNo": "鲁Q·M5521", "mixedLoad": False,
+    "plannedCustomerId": 2, "settleMethod": "CONSIGN",
+    "operator": "赵调度"
+})
+BE = bE["id"]
+te2 = call("POST", "/api/temp-exceptions", {
+    "batchId": BE, "measuredTemp": 7.5, "cabinPhotos": ["https://example.com/cabin-e1.jpg"],
+    "sampledRotRate": 0.08, "inspector": "李检"
+})
+T2 = te2["id"]
+call("POST", f"/api/temp-exceptions/{T2}/decision", {
+    "decision": "DOWNGRADE_ACCEPT", "downgradeGrade": "B", "decidedBy": "周社长",
+    "ownerConfirmNote": "已知悉温度超标，同意按B级降级入库"
+})
+be = call("GET", f"/api/batches/{BE}")
+assert be["status"] == "INSPECTED" and float(be["acceptedWeight"]) == 200.0
+lot_e = [l for l in call("GET", "/api/stock/pending") if l["batchId"] == BE][0]
+assert lot_e["grade"] == "B" and float(lot_e["unitPrice"]) == 15.0 and lot_e["shelfLifeDays"] == 2
+call("POST", "/api/stock/put-away", {"lotId": lot_e["id"], "locationId": 2, "operator": "赵调度"})
+oE = call("POST", "/api/outbounds/plan", {
+    "customerId": 4, "batchId": BE, "operator": "赵调度",
+    "items": [{"lotId": lot_e["id"], "weight": 50}]
+})
+assert float(oE["totalAmount"]) == 50 * 15.0
+call("POST", f"/api/outbounds/{oE['id']}/execute?operator=赵调度", None)
+cE = call("POST", "/api/complaints", {
+    "outboundId": oE["id"], "type": "BAD_FRUIT", "problemWeight": 10,
+    "claimAmount": 150, "description": "草莓到货次日软腐出水"
+})
+ev = call("GET", f"/api/complaints/{cE['id']}/evidence")
+assert ev["tempExceeded"] is True
+assert ev["suggestedResponsibility"] == "OWNER", "货主确认降级入库应建议货主责任"
+assert ev["tempExceptions"][0]["decision"] == "DOWNGRADE_ACCEPT"
+assert ev["tempExceptions"][0]["decidedBy"] == "周社长"
+call("POST", f"/api/complaints/{cE['id']}/resolve", {
+    "responsibility": "OWNER", "settledAmount": 100,
+    "handler": "管理员", "handleResult": "平台回看：到货温度超标且货主确认降级入库，判定货主责任"
+})
+# 无处置记录但到货超标的批次（B1 葡萄 12℃）：只给证据不给建议
+ev0 = call("GET", f"/api/complaints/{CID}/evidence")
+assert ev0["tempExceeded"] is True and ev0["suggestedResponsibility"] is None
+
+# ---------- T3. 草莓批次F：现场退货 ----------
+bF = call("POST", "/api/batches/arrival", {
+    "ownerId": 2, "categoryId": 2, "origin": "青山乡莓香村",
+    "productionDate": "2026-10-05", "grossWeight": 150,
+    "arrivalTemp": 10, "packaging": "纸盒",
+    "certificateNo": "QY-CM-20261005-06", "issuingOrg": "县农检中心",
+    "certIssueDate": "2026-10-05", "certificateVerified": True,
+    "vehicleNo": "鲁Q·M5522", "mixedLoad": False,
+    "settleMethod": "CONSIGN", "operator": "赵调度"
+})
+BF = bF["id"]
+te3 = call("POST", "/api/temp-exceptions", {
+    "batchId": BF, "measuredTemp": 9.5, "sampledRotRate": 0.15, "inspector": "李检"
+})
+call("POST", f"/api/temp-exceptions/{te3['id']}/decision", {
+    "decision": "ONSITE_RETURN", "decidedBy": "周社长",
+    "ownerConfirmNote": "腐损率过高，现场整批退回"
+})
+bf = call("GET", f"/api/batches/{BF}")
+assert bf["status"] == "RETURNED" and float(bf["returnedWeight"]) == 150.0
+call("POST", "/api/bills/generate", {"batchId": BF}, expect=400)
+
+# ---------- T4. 草莓批次G：预冷复检合格 → 解冻上架 → 出库 → 账单含预冷处理费 ----------
+bG = call("POST", "/api/batches/arrival", {
+    "ownerId": 2, "categoryId": 2, "origin": "青山乡莓香村",
+    "productionDate": "2026-10-05", "grossWeight": 400,
+    "arrivalTemp": 7, "packaging": "泡沫箱加冰",
+    "certificateNo": "QY-CM-20261005-07", "issuingOrg": "县农检中心",
+    "certIssueDate": "2026-10-05", "certificateVerified": True,
+    "vehicleNo": "鲁Q·M5523", "mixedLoad": False,
+    "plannedCustomerId": 2, "settleMethod": "CONSIGN",
+    "operator": "赵调度"
+})
+BG = bG["id"]
+te4 = call("POST", "/api/temp-exceptions", {
+    "batchId": BG, "measuredTemp": 6.5, "sampledRotRate": 0.03, "inspector": "李检"
+})
+T4 = te4["id"]
+call("POST", f"/api/temp-exceptions/{T4}/decision", {
+    "decision": "PRECOOL_RECHECK", "decidedBy": "周社长",
+    "precoolZoneId": 1, "recheckSlotAt": "2026-10-05T16:00:00"
+})
+rk4 = call("POST", f"/api/temp-exceptions/{T4}/recheck", {
+    "recheckTemp": 2, "recheckRotRate": 0.02, "recheckBy": "李检",
+    "note": "预冷后果温回到合同区间"
+})
+assert rk4["recheckResult"] == "PASSED"
+bg = call("GET", f"/api/batches/{BG}")
+assert bg["status"] == "INSPECTED" and bg["saleFrozen"] is False
+lot_g = [l for l in call("GET", "/api/stock/pending") if l["batchId"] == BG][0]
+assert float(lot_g["unitPrice"]) == 22.5 and lot_g["shelfLifeDays"] == 3
+call("POST", "/api/stock/put-away", {"lotId": lot_g["id"], "locationId": 3, "operator": "赵调度"})
+oG = call("POST", "/api/outbounds/plan", {
+    "customerId": 2, "batchId": BG, "operator": "赵调度",
+    "items": [{"lotId": lot_g["id"], "weight": 100}]
+})
+assert float(oG["totalAmount"]) == 100 * 22.5
+call("POST", f"/api/outbounds/{oG['id']}/execute?operator=赵调度", None)
+billG = call("POST", "/api/bills/generate", {"batchId": BG})
+itemsG = call("GET", f"/api/bills/{billG['id']}/items")
+precool_items = [i for i in itemsG if i["type"] == "PRECOOL_FEE"]
+assert len(precool_items) == 1 and float(precool_items[0]["amount"]) == -80.0, \
+    f"预冷处理费应为 400kg×1天×0.2=80 元，实际 {precool_items}"
+assert any(i["type"] == "SALE" and float(i["amount"]) == 2250.0 for i in itemsG)
+print(f"  批次G账单：预冷处理费 {precool_items[0]['amount']} 元，销售收入 2250 元")
+
+# 批次D追溯链应包含温度超标处置与出库撤回节点
+chainD = call("GET", f"/api/trace/batch/{BD}")
+stagesD = [e["stage"] for e in chainD["timeline"]]
+assert "TEMP_EXCEPTION" in stagesD and "OUTBOUND" in stagesD
+print(f"  批次D追溯节点={len(chainD['timeline'])}，含温度超标处置与出库计划撤回")
 
 # ---------- 18. 追溯链 ----------
 chain = call("GET", f"/api/trace/batch/{B1}")

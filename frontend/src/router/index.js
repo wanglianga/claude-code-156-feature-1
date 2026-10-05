@@ -12,6 +12,7 @@ const routes = [
       { path: 'batches', name: '批次列表', component: () => import('../views/Batches.vue') },
       { path: 'batches/:id', name: '批次链详情', component: () => import('../views/BatchDetail.vue') },
       { path: 'inspection', name: '质检验收', component: () => import('../views/Inspection.vue') },
+      { path: 'temp-exception', name: '温度超标处置', component: () => import('../views/TempException.vue') },
       { path: 'sorting', name: '分拣处理', component: () => import('../views/Sorting.vue') },
       { path: 'stock', name: '库位温区', component: () => import('../views/Stock.vue') },
       { path: 'outbound', name: '出库调度', component: () => import('../views/Outbound.vue') },

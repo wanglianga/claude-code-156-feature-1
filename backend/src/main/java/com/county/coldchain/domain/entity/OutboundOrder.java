@@ -38,4 +38,12 @@ public class OutboundOrder extends BaseEntity {
     private LocalDateTime plannedAt;
     private LocalDateTime outAt;
     private String remark;
+    /** 撤回原因（批次复检不合格等自动撤回时填写） */
+    private String withdrawReason;
+    /** 撤回后由哪个替代出库单接续履约 */
+    private Long substitutedByOrderId;
+    /** 本单是替代哪个被撤回的出库单 */
+    private Long substitutedFromOrderId;
+    /** 替代重排时销售员向客户说明的到货差异 */
+    private String substituteNote;
 }

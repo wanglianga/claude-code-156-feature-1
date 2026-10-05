@@ -7,6 +7,7 @@
           <el-radio-group v-model="statusFilter" size="small" @change="load">
             <el-radio-button value="">全部</el-radio-button>
             <el-radio-button value="REGISTERED">待检</el-radio-button>
+            <el-radio-button value="PRECOOLING">预冷待复检</el-radio-button>
             <el-radio-button value="SORTING">分拣中</el-radio-button>
             <el-radio-button value="IN_STORAGE">在库</el-radio-button>
             <el-radio-button value="PARTIAL_OUT">部分出库</el-radio-button>
@@ -35,9 +36,10 @@
         <el-table-column label="预计客户" width="150">
           <template #default="{ row }">{{ customerName(row.plannedCustomerId) }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="130">
           <template #default="{ row }">
             <el-tag size="small" :type="statusTag(row.status)">{{ $dict('BatchStatus', row.status) }}</el-tag>
+            <el-tag v-if="row.saleFrozen" size="small" type="danger" effect="plain">冻结</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="可售/损耗/已出" width="170">

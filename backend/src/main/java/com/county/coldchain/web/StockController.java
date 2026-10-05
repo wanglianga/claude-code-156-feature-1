@@ -39,6 +39,10 @@ public class StockController {
     @GetMapping("/in-storage")
     public List<StockLot> inStorage() { return stockService.inStorageLots(); }
 
+    @Operation(summary = "预冷暂存货位批次（复检前冻结销售）")
+    @GetMapping("/precool")
+    public List<StockLot> precool() { return stockService.precoolLots(); }
+
     @Operation(summary = "上架到库位")
     @PostMapping("/put-away")
     public StockLot putAway(@Valid @RequestBody PutAwayRequest req) {

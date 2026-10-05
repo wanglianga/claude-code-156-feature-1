@@ -37,6 +37,12 @@ public class ComplaintController {
         return complaintService.resolve(id, req);
     }
 
+    @Operation(summary = "责任判定辅助：回看温度超标与货主确认记录，给出责任建议")
+    @GetMapping("/{id}/evidence")
+    public java.util.Map<String, Object> evidence(@PathVariable Long id) {
+        return complaintService.evidence(id);
+    }
+
     @Operation(summary = "投诉列表")
     @GetMapping
     public List<Complaint> list() {

@@ -18,6 +18,7 @@ import com.county.coldchain.domain.entity.SortItem;
 import com.county.coldchain.domain.entity.SortingRecord;
 import com.county.coldchain.domain.entity.StockLot;
 import com.county.coldchain.domain.entity.StockMove;
+import com.county.coldchain.domain.entity.TempExceptionRecord;
 import com.county.coldchain.repo.AdvanceLedgerRepository;
 import com.county.coldchain.repo.BatchRepository;
 import com.county.coldchain.repo.BillItemRepository;
@@ -31,6 +32,7 @@ import com.county.coldchain.repo.SortItemRepository;
 import com.county.coldchain.repo.SortingRecordRepository;
 import com.county.coldchain.repo.StockLotRepository;
 import com.county.coldchain.repo.StockMoveRepository;
+import com.county.coldchain.repo.TempExceptionRepository;
 import com.county.coldchain.support.BizException;
 import com.county.coldchain.web.dto.BillGenerateRequest;
 import com.county.coldchain.web.dto.BillSettleRequest;
@@ -69,6 +71,7 @@ public class BillingService {
     private final OutboundItemRepository outboundItemRepository;
     private final ComplaintRepository complaintRepository;
     private final AdvanceLedgerRepository advanceRepository;
+    private final TempExceptionRepository tempExceptionRepository;
     private final TraceService traceService;
 
     @Value("${app.billing.labor-rate-per-minute:0.6}")
@@ -151,6 +154,28 @@ public class BillingService {
                     null, cat.getStorageFeeRate(), fee, days);
             storageFee = storageFee.add(fee);
         }
+
+        // 3.1) 预冷处理费：温度超标选择预冷后复检的批次，预冷暂存期间加收
+        BigDecimal precoolFee = BigDecimal.ZERO;
+        for (TempExceptionRecord te : tempExceptionRepository.findByBatchIdOrderByCreatedAtDesc(batch.getId())) {
+            if (te.getDecision() != com.county.coldchain.domain.DomainEnums.TempDecision.PRECOOL_RECHECK
+                    || te.getPrecoolFeeRate() == null || te.getDecidedAt() == null) {
+                continue;
+            }
+            LocalDateTime precoolEnd = te.getRecheckedAt() == null ? cutoff : te.getRecheckedAt();
+            int days = Math.max(1, daysBetween(te.getDecidedAt(), precoolEnd));
+            StockLot precoolLot = te.getPrecoolLotId() == null ? null
+                    : lotRepository.findById(te.getPrecoolLotId()).orElse(null);
+            BigDecimal w = precoolLot == null ? batch.getNetWeight() : precoolLot.getInitialWeight();
+            BigDecimal fee = w.multiply(BigDecimal.valueOf(days)).multiply(te.getPrecoolFeeRate())
+                    .setScale(2, RoundingMode.HALF_UP).negate();
+            addItem(bill, BillItemType.PRECOOL_FEE,
+                    "预冷处理费 " + te.getRecordNo() + "（" + w + "kg × " + days + " 天 × "
+                            + te.getPrecoolFeeRate() + " 元/kg·天）",
+                    w, te.getPrecoolFeeRate(), fee, days);
+            precoolFee = precoolFee.add(fee);
+        }
+        storageFee = storageFee.add(precoolFee);
 
         // 4) 分拣服务费 + 工时费
         BigDecimal sortFeeTotal = BigDecimal.ZERO;
